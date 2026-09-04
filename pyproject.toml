@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tailwarden"
+version = "0.1.0"
+description = "Tailwarden: Tailscale node health automation with FastAPI and aiohttp"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aiohttp>=3.12.15,<4",
+  "fastapi>=0.116.1,<1",
+  "pydantic-settings>=2.10.1,<3",
+  "uvicorn>=0.35.0,<1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.1,<1",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1.1.0,<2",
+  "ruff>=0.12.10,<1",
+]
+
+[project.scripts]
+tailwarden = "tailwarden.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tailwarden"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/README.md",
+  "/README.zh-CN.md",
+  "/docs",
+  "/.env.example",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
