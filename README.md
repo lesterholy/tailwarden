@@ -64,9 +64,25 @@ Important variables and where they come from:
 | `KEY_EXPIRY_WARNING_HOURS` | `KEY_EXPIRY_WARNING_HOURS` | Warning window before key expiry | Operator-defined threshold |
 | `AUTH_KEY_EXPIRY_SECONDS` | `AUTH_KEY_EXPIRY_SECONDS` | Lifetime of an explicit recovery auth key | Operator-defined threshold |
 
-Create the Trust Credential with issuer `GitHub Actions`, subject
-`repo:lesterholy/tailwarden:environment:production`, scope `devices:core`, and the tag used by
-`SERVER_TAG`.
+Create the Trust Credential with issuer `GitHub Actions`, scope `devices:core`, and the tag used
+by `SERVER_TAG`. Do not hardcode the OIDC subject from older examples. Read the current repository
+subject prefix from GitHub and append the environment suffix used by the workflow job:
+
+```bash
+gh api repos/lesterholy/tailwarden/actions/oidc/customization/sub --jq '.sub_claim_prefix'
+```
+
+GitHub repositories created after July 15, 2026 use an immutable-ID default subject prefix. For
+this repository, GitHub currently reports
+`repo:lesterholy@33650692/tailwarden@1356719362`, so the `production` environment subject is:
+
+```text
+repo:lesterholy@33650692/tailwarden@1356719362:environment:production
+```
+
+Treat the returned `sub_claim_prefix` as authoritative. If the workflow job stops using the
+`production` environment, remove the `:environment:production` suffix. Re-check the prefix after a
+repository transfer, recreation, or any GitHub OIDC subject customization change.
 
 For least privilege, use a dedicated tag such as `tag:tailwarden-managed` when `tag:server` also
 covers machines this automation should not manage. Keep the Trust Credential tag and `SERVER_TAG`
@@ -124,11 +140,11 @@ access token in Tailscale admin console **Settings > Keys**. `APP_HOST`, `APP_PO
 - Production therefore stores the Client ID and Audience, not a long-lived Tailscale API token.
 
 Although the Client ID and Audience do not normally expire with time, the existing configuration
-stops working if the Tailscale Trust Credential is deleted, disabled, or recreated; the GitHub
-repository or `production` environment is renamed and no longer matches the OIDC subject; or the
-Audience, Issuer, `devices:core` scope, or allowed tags are changed. After any such change, verify
-the values in Tailscale **Settings > Trust credentials** and update the GitHub environment values
-when necessary.
+stops working if the Tailscale Trust Credential is deleted, disabled, or recreated; the GitHub job
+binds a different environment or no environment at all; the repository OIDC subject prefix changes;
+or the Audience, Issuer, `devices:core` scope, or allowed tags are changed. After any such change,
+verify the values in Tailscale **Settings > Trust credentials** and update the GitHub environment
+values when necessary.
 
 ## Public-repo logging posture
 

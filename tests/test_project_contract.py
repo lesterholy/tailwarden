@@ -154,11 +154,15 @@ def test_docs_match_schedule_recovery_and_secret_contracts() -> None:
     env_example = read(".env.example")
     config = read("src/tailwarden/config.py")
     combined = "\n".join([english, chinese, operations])
-    oidc_subject = "repo:lesterholy/tailwarden:environment:production"
+    oidc_subject = "repo:lesterholy@33650692/tailwarden@1356719362:environment:production"
+    legacy_oidc_subject = "repo:lesterholy/tailwarden:environment:production"
 
     assert oidc_subject in english
     assert oidc_subject in chinese
     assert oidc_subject in operations
+    assert legacy_oidc_subject not in combined
+    assert combined.count("actions/oidc/customization/sub") >= 3
+    assert combined.count("sub_claim_prefix") >= 3
     assert "repo:" + "OWNER/REPO" not in combined
     assert "0 0,12 * * *" in english
     assert "0 0,12 * * *" in chinese

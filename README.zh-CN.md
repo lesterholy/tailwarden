@@ -63,9 +63,24 @@ Actions 和 CLI 运行，不需要单独部署 FastAPI 服务。
 | `KEY_EXPIRY_WARNING_HOURS` | `KEY_EXPIRY_WARNING_HOURS` | 距离 key expiry 多久开始预警 | 由操作者按巡检策略设定 |
 | `AUTH_KEY_EXPIRY_SECONDS` | `AUTH_KEY_EXPIRY_SECONDS` | 显式 recovery auth key 的有效期 | 由操作者按恢复策略设定 |
 
-创建 Trust Credential 时，Issuer 选择 `GitHub Actions`，Subject 使用
-`repo:lesterholy/tailwarden:environment:production`，Scope 只授予 `devices:core`，Tags 填写
-`SERVER_TAG` 对应的 tag。
+不同仓库的 GitHub OIDC Subject 格式可能不同。不要照抄旧示例中的仓库路径格式，应先读取
+当前仓库实际使用的 Subject 前缀：
+
+```bash
+gh api repos/lesterholy/tailwarden/actions/oidc/customization/sub --jq '.sub_claim_prefix'
+```
+
+2026 年 7 月 15 日后创建的 GitHub 仓库默认使用包含不可变 owner/repository ID 的 Subject
+前缀。当前仓库返回 `repo:lesterholy@33650692/tailwarden@1356719362`，因此绑定
+`production` environment 的完整 Subject 是：
+
+```text
+repo:lesterholy@33650692/tailwarden@1356719362:environment:production
+```
+
+应始终以 API 返回的 `sub_claim_prefix` 为准，再追加 workflow job 使用的 environment 后缀。
+创建 Trust Credential 时，Issuer 选择 `GitHub Actions`，Subject 使用上述完整值，Scope 只授予
+`devices:core`，Tags 填写 `SERVER_TAG` 对应的 tag。
 
 按最小权限原则，如果 `tag:server` 还覆盖不应由本项目管理的设备，建议改用
 `tag:tailwarden-managed` 这样的专用 tag，并让 Trust Credential 的 Tags 与 `SERVER_TAG`
@@ -117,10 +132,10 @@ workflow 在运行前会把 `TS_MANAGER_CLIENT_ID -> TS_CLIENT_ID`、`TS_MANAGER
 - 因此，生产环境长期保存的是 Client ID 和 Audience，而不是长期 Tailscale API token。
 
 Client ID 和 Audience 虽然通常不会按时间自动过期，但以下变化会使现有配置失效：删除、
-禁用或重新创建 Tailscale Trust Credential；GitHub 仓库或 `production` environment 改名，
-导致 OIDC Subject 不再匹配；修改 Audience、Issuer、`devices:core` scope 或允许使用的 tags。
-发生这些变化后，应从 Tailscale **Settings > Trust credentials** 重新核对并更新 GitHub
-environment 配置。
+禁用或重新创建 Tailscale Trust Credential；GitHub job 改为绑定其他 environment 或不再绑定
+environment；仓库 OIDC Subject 前缀变化；修改 Audience、Issuer、`devices:core` scope 或允许
+使用的 tags。发生这些变化后，应重新查询 `sub_claim_prefix`，并从 Tailscale
+**Settings > Trust credentials** 核对和更新 GitHub environment 配置。
 
 ## 公开仓库的日志策略
 

@@ -76,16 +76,34 @@ CLI：
 公开仓库的普通访客不能直接浏览 Variables 值，但有相应权限的仓库协作者可以通过 GitHub
 API 读取，而且 Variables 不会在日志中自动脱敏。因此这里只存放可公开的配置元数据。
 
-Trust Credential 的 OIDC subject 必须与 GitHub `production` environment 精确匹配。
+Trust Credential 的 OIDC subject 必须与 GitHub workflow 实际拿到的 OIDC claim 精确匹配。
+不要继续照抄旧示例里的仓库路径格式；请先读取当前仓库的 subject prefix，再按 job 绑定的
+environment 追加后缀：
+
+```bash
+gh api repos/lesterholy/tailwarden/actions/oidc/customization/sub --jq '.sub_claim_prefix'
+```
+
+2026 年 7 月 15 日后创建的 GitHub 仓库默认使用包含不可变 owner/repository ID 的 Subject
+前缀。当前仓库返回 `repo:lesterholy@33650692/tailwarden@1356719362`。由于生产 job 绑定了
+`production` environment，所以完整 Subject 是：
+
+```text
+repo:lesterholy@33650692/tailwarden@1356719362:environment:production
+```
+
+应始终以 API 返回的 `sub_claim_prefix` 为准。如果将来 workflow 不再绑定 `production`
+environment，就不要追加 `:environment:production`。仓库迁移、重建，或 GitHub OIDC
+Subject 自定义规则变化后，也应重新核对。
 
 Tailscale Trust Credential 推荐值：
 
-| Field   | Value                                               |
-|---------|-----------------------------------------------------|
-| Issuer  | `GitHub Actions`                                    |
-| Subject | `repo:lesterholy/tailwarden:environment:production` |
-| Scopes  | `devices:core`                                      |
-| Tags    | `tag:tailwarden-managed`（推荐专用 tag）              |
+| Field   | Value                                                                            |
+|---------|----------------------------------------------------------------------------------|
+| Issuer  | `GitHub Actions`                                                                 |
+| Subject | `repo:lesterholy@33650692/tailwarden@1356719362:environment:production`          |
+| Scopes  | `devices:core`                                                                   |
+| Tags    | `tag:tailwarden-managed`（推荐专用 tag）                                           |
 
 GitHub Actions 始终强制输出脱敏。公开日志与 Step Summary 只显示结果、计数和通用错误，
 不展示 tailnet、tag、设备名称、地址、逐台时间或上游错误正文。需要逐台定位时，请在受控
@@ -142,8 +160,9 @@ workflow 会把 GitHub environment 里的 `TS_MANAGER_CLIENT_ID` 和 `TS_MANAGER
 ## 公开仓库安全边界
 
 - GitHub Actions 必须使用完整 OIDC 配置，代码会拒绝回退到 `TS_TOKEN`。
-- Trust Credential Subject 必须精确绑定
-  `repo:lesterholy/tailwarden:environment:production`，Scope 只授予 `devices:core`。
+- Trust Credential Subject 必须精确绑定当前 GitHub OIDC claim；本仓库当前值为
+  `repo:lesterholy@33650692/tailwarden@1356719362:environment:production`，Scope 只授予
+  `devices:core`。
 - 优先给受管设备使用专用 tag（例如 `tag:tailwarden-managed`），并让 Trust Credential 的
   Tags 与 `SERVER_TAG` 完全一致；生产环境避免使用 `all`、`*` 或 `tag:*`。
 - workflow 不为 `SERVER_TAG` 和 `REJOIN_AUTH_KEY_TAG` 提供隐式默认值；两者必须显式配置，
