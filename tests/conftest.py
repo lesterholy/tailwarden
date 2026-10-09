@@ -5,7 +5,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import pytest
 from aiohttp import web
 
+from tailwarden.config import Settings
+
 ServerFactory = Callable[[web.Application], Awaitable[str]]
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let each test opt into settings instead of inheriting host or CI values."""
+    for field in Settings.model_fields.values():
+        if isinstance(field.alias, str):
+            monkeypatch.delenv(field.alias, raising=False)
 
 
 @pytest.fixture
