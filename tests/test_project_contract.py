@@ -136,6 +136,15 @@ def test_every_external_github_action_is_pinned_to_a_full_commit_sha() -> None:
     assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for _, ref in action_refs), action_refs
 
 
+def test_codeql_steps_use_the_same_version() -> None:
+    refs = re.findall(
+        r"uses:\s*github/codeql-action/[^@\s]+@([^\s]+)",
+        read(".github/workflows/codeql.yml"),
+    )
+    assert len(refs) >= 2
+    assert len(set(refs)) == 1, refs
+
+
 def test_repository_has_private_vulnerability_reporting_policy() -> None:
     policy = read(".github/SECURITY.md")
     assert "privately" in policy
