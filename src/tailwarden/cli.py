@@ -138,6 +138,7 @@ async def run_keepalive_command(
         report,
         settings.github_step_summary,
         redact_details=redact_details,
+        include_device_names=settings.report_device_names,
     )
     sys.stdout.write(_render_console_report(report, redact_details=redact_details))
     if report.action_errors:

@@ -48,8 +48,10 @@ Use `.env.example` as the source of truth for supported environment variables.
 Store non-sensitive production configuration in GitHub `production` environment variables, not
 in a committed `.env` file. GitHub Variables are not a secret store: public visitors cannot browse
 their values directly in repository settings, but authorized repository collaborators can read
-them through the GitHub API and GitHub does not automatically mask them in logs. Only store
-configuration metadata that would be acceptable if accidentally disclosed.
+them through the GitHub API. GitHub Runner prints configured vars in step env as plaintext,
+including Client ID, Audience, tailnet, tags, and thresholds. These are configuration identifiers,
+not secrets; application redaction does not cover Runner output. Store only metadata suitable
+for public logs.
 
 Important variables and where they come from:
 
@@ -148,8 +150,21 @@ values when necessary.
 
 ## Public-repo logging posture
 
-- GitHub Actions always forces redaction. Logs and Step Summary retain outcomes, counts, and generic
-  errors while hiding tailnet, tags, device names, addresses, per-device times, and upstream bodies.
+- GitHub Actions forces application output redaction and keeps `REPORT_REDACT_DETAILS=true`.
+  Console JSON retains outcomes, counts, run start/end timestamps, and generic errors with HTTP
+  status codes; it does not gain a device table or machine names.
+- The workflow explicitly sets `REPORT_DEVICE_NAMES=true` (the application default is `false`).
+  Step Summary **publicly shows each matched machine's short name**, control-plane status, and
+  key-expiry maintenance result. Names use the first DNS label of API `name`, never hostname,
+  ID, or address; missing or invalid names use `(name unavailable)`. The table covers recent,
+  offline, stale, and unknown lastSeen states, plus already disabled, disabled this run,
+  disable failed, and planned (dry-run) results. Zero matches are reported as `0 matches`.
+- Device status comes from Tailscale API `online`/`lastSeen`; Tailwarden does not ping devices.
+  Device IDs, DNS suffixes, addresses, tailnet, tags, per-device timestamps, and upstream error
+  details remain hidden in redacted application output. Existing run timestamps and HTTP status
+  codes remain visible. Set `REPORT_DEVICE_NAMES: "false"` in the workflow to hide the table.
+- Runner step env still prints configured vars in plaintext; program redaction does not hide
+  that part of the public Actions logs.
 - Local CLI runs keep the full detailed JSON and detailed stderr errors unless you explicitly set `REPORT_REDACT_DETAILS=true` in your local `.env`.
 - If you need device-by-device detail after a scheduled run, rerun locally in a controlled terminal instead of relaxing the GitHub redaction default.
 
@@ -174,8 +189,14 @@ The workflow remains the production scheduler and enforcement point:
 
 - Manual dispatch is supported.
 - Scheduled runs stay at every 12 hours.
-- A stale node can fail the workflow so GitHub notifications still work.
-- API and payload errors should fail the run instead of being silently ignored.
+- Both schedule and manual dispatch fix `FAIL_ON_STALE: "false"`: stale, offline, and unknown
+  lastSeen devices are recorded in Summary and do not fail the workflow. There is no manual
+  input to make these device conditions fail the job.
+- Authentication, API operations (including a device key-expiry update), payload, and configuration
+  errors still fail the run. A failed device update is shown in Summary alongside all other rows.
+- Local CLI compatibility is unchanged: `FAIL_ON_STALE` defaults to `true`, and
+  `--fail-on-stale` / `--no-fail-on-stale` override it. Stale/offline returns `2` when enabled;
+  operation errors return `4`, configuration errors `64`, and report-only device conditions `0`.
 - The workflow runs only from the repository default branch and rejects wildcard device selectors.
 - Restrict the `production` environment to the default branch. Do not require reviewers when the
   scheduled job must remain unattended.

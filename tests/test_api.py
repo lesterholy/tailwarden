@@ -11,8 +11,9 @@ from fastapi import FastAPI
 from tailwarden.api import create_app
 from tailwarden.config import Settings
 from tailwarden.errors import RunInProgressError, UpstreamError
-from tailwarden.models import KeepaliveOutcome, KeepaliveReport, RecoveryKey
+from tailwarden.models import Device, KeepaliveOutcome, KeepaliveReport, RecoveryKey
 from tailwarden.runtime import AppRuntime
+from tailwarden.service import KeepaliveService
 
 
 def build_settings(**overrides: object) -> Settings:
@@ -220,3 +221,68 @@ async def test_create_app_accepts_an_injected_runtime() -> None:
 
     async with app_client(app):
         assert app.state.runtime is runtime
+
+
+@pytest.mark.asyncio
+async def test_real_service_device_statuses_do_not_extend_api_or_json_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        async def list_devices(self, tailnet: str) -> list[Device]:
+            return [
+                Device.from_tailscale_payload(
+                    {
+                        "nodeId": "device-id",
+                        "hostname": "legacy-hostname",
+                        "name": "summary-only.example.ts.net",
+                        "online": False,
+                        "tags": ["tag:tailwarden-managed"],
+                        "keyExpiryDisabled": True,
+                    }
+                )
+            ]
+
+        async def disable_key_expiry(self, device_id: str) -> None:
+            raise AssertionError("key expiry is already disabled")
+
+    settings = build_settings(REPORT_DEVICE_NAMES=True)
+    runtime = AppRuntime(settings)
+
+    async def build_service() -> KeepaliveService:
+        return KeepaliveService(settings, FakeClient())
+
+    monkeypatch.setattr(runtime, "_build_service", build_service)
+    async with app_client(create_app(runtime=runtime)) as client:
+        response = await client.post("/api/v1/keepalive/run", headers=auth_headers())
+        status = await client.get("/api/v1/status", headers=auth_headers())
+
+    assert response.status_code == status.status_code == 200
+    assert runtime.last_report is not None
+    assert runtime.last_report.device_statuses[0].machine_name == "summary-only"
+    assert response.json() == status.json()["last_report"]
+    assert response.json() == runtime.last_report.model_dump(mode="json")
+    assert set(response.json()) == {
+        "outcome",
+        "tailnet",
+        "server_tag",
+        "rejoin_auth_key_tag",
+        "dry_run",
+        "fail_on_stale",
+        "stale_after_minutes",
+        "key_expiry_warning_hours",
+        "auth_key_expiry_seconds",
+        "started_at",
+        "finished_at",
+        "total_devices",
+        "stale_devices",
+        "unknown_last_seen_devices",
+        "expiring_devices",
+        "key_expiry_actions",
+        "issues",
+        "action_errors",
+    }
+    for internal_value in ("device_statuses", "machine_name", "summary-only", "example.ts.net"):
+        assert (
+            internal_value
+            not in response.text + status.text + runtime.last_report.model_dump_json()
+        )

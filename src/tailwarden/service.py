@@ -10,10 +10,13 @@ from .models import (
     ActionCounts,
     ActionError,
     Device,
+    DeviceConnectivity,
     DeviceIssue,
     DeviceIssueCode,
+    DeviceStatus,
     KeepaliveOutcome,
     KeepaliveReport,
+    KeyExpiryState,
     RecoveryKey,
 )
 
@@ -97,14 +100,21 @@ class KeepaliveService:
         expiry_cutoff = started_at + timedelta(hours=self._settings.key_expiry_warning_hours)
 
         for device in devices:
-            self._record_device_issues(
+            connectivity = self._record_device_issues(
                 report,
                 device,
                 stale_cutoff=stale_cutoff,
                 expiry_cutoff=expiry_cutoff,
                 now=started_at,
             )
-            await self._maintain_key_expiry(report, device)
+            key_expiry = await self._maintain_key_expiry(report, device)
+            report.device_statuses.append(
+                DeviceStatus(
+                    machine_name=device.machine_name,
+                    connectivity=connectivity,
+                    key_expiry=key_expiry,
+                )
+            )
 
         report.finished_at = self._now()
         report.outcome = self._resolve_outcome(report)
@@ -118,9 +128,11 @@ class KeepaliveService:
         stale_cutoff: datetime,
         expiry_cutoff: datetime,
         now: datetime,
-    ) -> None:
+    ) -> DeviceConnectivity:
         reference = device.to_reference()
+        connectivity = DeviceConnectivity.SEEN_RECENTLY
         if device.online is False:
+            connectivity = DeviceConnectivity.OFFLINE
             report.stale_devices += 1
             report.issues.append(
                 DeviceIssue(
@@ -131,6 +143,7 @@ class KeepaliveService:
                 )
             )
         elif device.last_seen_at is None:
+            connectivity = DeviceConnectivity.UNKNOWN_LAST_SEEN
             report.unknown_last_seen_devices += 1
             report.issues.append(
                 DeviceIssue(
@@ -141,6 +154,7 @@ class KeepaliveService:
                 )
             )
         elif device.last_seen_at < stale_cutoff:
+            connectivity = DeviceConnectivity.STALE
             report.stale_devices += 1
             report.issues.append(
                 DeviceIssue(
@@ -165,18 +179,19 @@ class KeepaliveService:
                     observed_at=device.expires_at,
                 )
             )
+        return connectivity
 
     async def _maintain_key_expiry(
         self,
         report: KeepaliveReport,
         device: Device,
-    ) -> None:
+    ) -> KeyExpiryState:
         if device.key_expiry_disabled:
             report.key_expiry_actions.already += 1
-            return
+            return KeyExpiryState.ALREADY_DISABLED
         if report.dry_run:
             report.key_expiry_actions.planned += 1
-            return
+            return KeyExpiryState.PLANNED
 
         try:
             await self._client.disable_key_expiry(device.id)
@@ -191,8 +206,10 @@ class KeepaliveService:
                     body=exc.body if isinstance(exc, UpstreamHTTPError) else None,
                 )
             )
+            return KeyExpiryState.FAILED
         else:
             report.key_expiry_actions.succeeded += 1
+            return KeyExpiryState.DISABLED_THIS_RUN
 
     @staticmethod
     def _resolve_outcome(report: KeepaliveReport) -> KeepaliveOutcome:
