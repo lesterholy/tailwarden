@@ -6,7 +6,14 @@ import pytest
 
 from tailwarden.config import Settings
 from tailwarden.errors import UpstreamError, UpstreamHTTPError, UpstreamPayloadError
-from tailwarden.models import Device, DeviceIssueCode, KeepaliveOutcome, RecoveryKey
+from tailwarden.models import (
+    Device,
+    DeviceConnectivity,
+    DeviceIssueCode,
+    KeepaliveOutcome,
+    KeyExpiryState,
+    RecoveryKey,
+)
 from tailwarden.service import KeepaliveService
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
@@ -68,6 +75,7 @@ def make_device(
     key_expiry_disabled: bool = True,
     expires_at: datetime | None = None,
     last_seen_at: datetime | None = NOW,
+    machine_name: str | None = None,
 ) -> Device:
     return Device(
         id=device_id,
@@ -78,6 +86,7 @@ def make_device(
         key_expiry_disabled=key_expiry_disabled,
         expires_at=expires_at,
         last_seen_at=last_seen_at,
+        machine_name=machine_name,
     )
 
 
@@ -114,6 +123,10 @@ async def test_dry_run_only_plans_actions_and_counts_existing_state() -> None:
     assert report.key_expiry_actions.already == 1
     assert report.expiring_devices == 1
     assert client.disabled_ids == []
+    assert [status.key_expiry for status in report.device_statuses] == [
+        KeyExpiryState.PLANNED,
+        KeyExpiryState.ALREADY_DISABLED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -145,6 +158,11 @@ async def test_apply_counts_only_real_success_and_continues_after_failures() -> 
     assert client.disabled_ids == ["success"]
     assert [error.status_code for error in report.action_errors] == [403, None]
     assert "body" not in report.model_dump()["action_errors"][0]
+    assert [status.key_expiry for status in report.device_statuses] == [
+        KeyExpiryState.DISABLED_THIS_RUN,
+        KeyExpiryState.FAILED,
+        KeyExpiryState.FAILED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -156,7 +174,7 @@ async def test_stale_rules_are_mutually_exclusive_and_cutoff_is_strict() -> None
             make_device("stale", last_seen_at=cutoff - timedelta(microseconds=1)),
             make_device("at-cutoff", last_seen_at=cutoff),
             make_device("unknown", last_seen_at=None),
-            make_device("fresh", last_seen_at=NOW),
+            make_device("fresh", online=None, last_seen_at=NOW),
         ]
     )
 
@@ -169,6 +187,42 @@ async def test_stale_rules_are_mutually_exclusive_and_cutoff_is_strict() -> None
     assert codes.count(DeviceIssueCode.OFFLINE) == 1
     assert codes.count(DeviceIssueCode.STALE) == 1
     assert codes.count(DeviceIssueCode.UNKNOWN_LAST_SEEN) == 1
+    assert [status.connectivity for status in report.device_statuses] == [
+        DeviceConnectivity.OFFLINE,
+        DeviceConnectivity.STALE,
+        DeviceConnectivity.SEEN_RECENTLY,
+        DeviceConnectivity.UNKNOWN_LAST_SEEN,
+        DeviceConnectivity.SEEN_RECENTLY,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("online", "last_seen_at"),
+    [(False, None), (True, NOW - timedelta(hours=1)), (None, None), (True, NOW)],
+)
+async def test_connectivity_reporting_still_records_expiring_keys(
+    online: bool | None,
+    last_seen_at: datetime | None,
+) -> None:
+    client = FakeClient(
+        [
+            make_device(
+                "expiring",
+                online=online,
+                last_seen_at=last_seen_at,
+                key_expiry_disabled=False,
+                expires_at=NOW + timedelta(hours=1),
+            ),
+        ]
+    )
+
+    report = await make_service(client).run_keepalive()
+
+    assert report.expiring_devices == 1
+    assert DeviceIssueCode.KEY_EXPIRING in [issue.code for issue in report.issues]
+    assert len(report.device_statuses) == 1
+    assert report.device_statuses[0].key_expiry is KeyExpiryState.DISABLED_THIS_RUN
 
 
 @pytest.mark.asyncio
@@ -194,9 +248,11 @@ async def test_fail_on_stale_changes_exit_policy_not_report_outcome() -> None:
 async def test_device_selector_semantics(selector: str, expected: set[str]) -> None:
     client = FakeClient(
         [
-            make_device("server", tags=("tag:server",), key_expiry_disabled=False),
-            make_device("web", tags=("tag:web",), key_expiry_disabled=False),
-            make_device("untagged", tags=(), key_expiry_disabled=False),
+            make_device(
+                "server", tags=("tag:server",), key_expiry_disabled=False, machine_name="server"
+            ),
+            make_device("web", tags=("tag:web",), key_expiry_disabled=False, machine_name="web"),
+            make_device("untagged", tags=(), key_expiry_disabled=False, machine_name="untagged"),
         ]
     )
 
@@ -205,6 +261,10 @@ async def test_device_selector_semantics(selector: str, expected: set[str]) -> N
     assert report.total_devices == len(expected)
     assert set(client.disabled_ids) == expected
     assert client.listed_tailnets == ["-"]
+    assert [status.machine_name for status in report.device_statuses] == [
+        name for name in ("server", "web", "untagged") if name in expected
+    ]
+    assert len(report.device_statuses) == report.total_devices
 
 
 @pytest.mark.asyncio
@@ -215,6 +275,7 @@ async def test_no_matches_is_a_distinct_successful_report() -> None:
 
     assert report.outcome is KeepaliveOutcome.NO_MATCHES
     assert report.total_devices == 0
+    assert report.device_statuses == []
 
 
 @pytest.mark.asyncio

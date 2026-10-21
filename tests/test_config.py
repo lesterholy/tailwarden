@@ -34,6 +34,17 @@ def test_default_tags_use_dedicated_managed_tag() -> None:
 
     assert settings.server_tag == "tag:tailwarden-managed"
     assert settings.rejoin_auth_key_tag == "tag:tailwarden-managed"
+    assert settings.report_device_names is False
+    assert settings.fail_on_stale is True
+
+
+def test_report_device_names_can_be_enabled_independently_of_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REPORT_DEVICE_NAMES", "true")
+    settings = Settings(_env_file=None, REPORT_REDACT_DETAILS=True)
+    assert settings.report_device_names is True
+    assert settings.report_redact_details is True
 
 
 @pytest.mark.parametrize("value", ["all", "*", "tag:*", "tag:server"])

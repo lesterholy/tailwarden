@@ -47,8 +47,9 @@ Actions 和 CLI 运行，不需要单独部署 FastAPI 服务。
 
 生产环境把非敏感配置放在 GitHub 的 `production` environment variables 中，不提交真实
 `.env` 文件。GitHub Variables 不是密钥保险箱：公开仓库的访客不能直接浏览设置页里的值，
-但有相应权限的仓库协作者可以通过 GitHub API 读取，而且这些值不会自动脱敏。因此只应
-保存即使意外进入日志也可以接受的配置元数据。
+但有相应权限的仓库协作者可以通过 GitHub API 读取。GitHub Runner 会在 step env 中明文
+打印配置 vars，包括 Client ID、Audience、tailnet、tag 和阈值。这些是配置标识符，不是
+secret；程序脱敏不覆盖 Runner 的这部分输出，因此这里只保存可公开的配置元数据。
 
 关键变量及其来源：
 
@@ -139,8 +140,18 @@ environment；仓库 OIDC Subject 前缀变化；修改 Audience、Issuer、`dev
 
 ## 公开仓库的日志策略
 
-- GitHub Actions 始终强制脱敏，因此 logs 和 Step Summary 只保留结果、计数和通用错误，
-  不展示 tailnet、tag、设备名称、地址、逐台时间或上游错误正文。
+- GitHub Actions 强制程序输出脱敏，workflow 保持 `REPORT_REDACT_DETAILS=true`。
+  console JSON 保留结果、计数、运行开始/结束时间和带 HTTP 状态码的通用错误，不新增逐台表格或机器名。
+- 应用的 `REPORT_DEVICE_NAMES` 默认 `false`，workflow 显式设为 `true`：Step Summary
+  会**公开每台匹配机器的短名**、控制面健康状态和密钥维护结果。短名取 API `name` 的
+  第一个 DNS 标签，不回退到 hostname、ID 或地址；缺失或非法名称显示 `(name unavailable)`。
+  表格覆盖最近出现、offline、stale、未知 lastSeen，以及已禁用、本次成功、失败和 dry-run
+  计划；零匹配明确显示 `0 matches`。
+- 状态只来自 Tailscale API 的 `online`/`lastSeen`，不主动 ping，也不证明实际网络可达。
+  程序脱敏输出仍隐藏设备 ID、DNS 后缀、地址、tailnet、tag、逐台时间和上游错误详情；
+  原有运行时间戳及 HTTP 状态码保留。将 workflow 的 `REPORT_DEVICE_NAMES` 改为 `"false"`
+  即可关闭设备表。
+- Runner 的 step env 仍会明文打印配置 vars，不能用程序脱敏来承诺整份 Actions 日志隐藏这些值。
 - 本地 CLI 默认输出完整 JSON 和详细 stderr 错误；只有在本地显式设置 `REPORT_REDACT_DETAILS=true` 时才会改成脱敏输出。
 - 如果定时任务结束后需要看逐台设备细节，建议在受控本地终端重跑，而不是放宽 GitHub 上的脱敏默认值。
 
@@ -165,8 +176,13 @@ GitHub Actions 仍然是生产环境的唯一调度与告警入口：
 
 - 支持手动触发。
 - 定时频率保持每 12 小时一次。
-- 发现 stale 节点时可以让 workflow 失败，以继续复用 GitHub 通知能力。
-- API 或 payload 错误应直接让运行失败，而不是静默忽略。
+- 定时与手动运行均固定 `FAIL_ON_STALE: "false"`；stale、offline、未知 lastSeen 只记录在
+  Summary 中，正常退出。手动触发不再提供让设备异常导致失败的输入项。
+- 认证、API 操作（含单台密钥维护）、payload 和配置错误仍让运行失败；维护失败时
+  Summary 仍列出所有匹配设备，并标记失败行。
+- 本地 CLI 兼容语义保持：`FAIL_ON_STALE` 默认 `true`，可用 `--fail-on-stale` 或
+  `--no-fail-on-stale` 覆盖。启用时 stale/offline 返回 `2`；操作错误返回 `4`，配置错误
+  返回 `64`，仅报告设备异常时返回 `0`。
 - workflow 只允许从仓库默认分支运行，并拒绝通配设备选择器。
 - 将 `production` environment 限制为默认分支；无人值守定时任务不要配置 required reviewers。
 - CI 的 pull request job 没有 OIDC 权限，也不会读取 `production` environment。

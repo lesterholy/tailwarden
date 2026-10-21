@@ -10,8 +10,11 @@ from tailwarden.errors import UpstreamPayloadError
 from tailwarden.models import (
     ActionError,
     Device,
+    DeviceConnectivity,
+    DeviceStatus,
     KeepaliveOutcome,
     KeepaliveReport,
+    KeyExpiryState,
     RecoveryKey,
     RecoveryKeyResponse,
 )
@@ -66,6 +69,55 @@ def test_device_uses_device_id_when_tailscale_name_fields_are_missing() -> None:
 
     assert device.name == "legacy-id"
     assert device.target == "100.64.0.10"
+    assert device.machine_name is None
+
+
+@pytest.mark.parametrize("api_name", ["srv-1.tail1234.ts.net", "srv-1.tail1234.ts.net.", "srv-1"])
+def test_public_machine_name_uses_api_name_not_hostname(api_name: str) -> None:
+    device = Device.from_tailscale_payload(
+        {"nodeId": "private-id", "hostname": "other-hostname", "name": api_name}
+    )
+
+    assert device.name == "other-hostname"
+    assert device.machine_name == "srv-1"
+    assert "machine_name" not in device.model_dump()
+
+
+@pytest.mark.parametrize(
+    "api_name",
+    [
+        None,
+        "",
+        123,
+        ["srv"],
+        "[x](https://evil)",
+        "@admin",
+        "<img src=x>",
+        "a|b",
+        "a\nb",
+        "a`b",
+        "a" * 64,
+        "-srv",
+        "srv-",
+        "srv\n",
+        "srv.tail\n",
+        "srv..tail",
+        "srv.<img>",
+        "设备.tail",
+        " srv.tail ",
+    ],
+)
+def test_invalid_public_name_has_no_hostname_id_or_address_fallback(api_name: object) -> None:
+    device = Device.from_tailscale_payload(
+        {
+            "id": "private-id",
+            "hostname": "private-hostname",
+            "name": api_name,
+            "addresses": ["100.64.0.10"],
+        }
+    )
+    assert device.machine_name is None
+    assert device.name == "private-hostname"
 
 
 def test_device_uses_first_non_empty_expiry_fallback() -> None:
@@ -90,6 +142,10 @@ def test_device_uses_first_non_empty_expiry_fallback() -> None:
         {"id": "node", "addresses": [100]},
         {"id": "node", "lastSeen": False},
         {"id": "node", "expires": "not-a-time"},
+        {"id": "node", "name": 123},
+        {"id": "node", "name": ["srv"]},
+        {"id": "node", "name": "   "},
+        {"id": "node", "hostname": 123, "name": "valid.tail"},
         "not-an-object",
     ],
 )
@@ -137,10 +193,20 @@ def test_action_error_body_is_excluded_even_when_nested() -> None:
         started_at=now,
         finished_at=now,
         action_errors=[error],
+        device_statuses=[
+            DeviceStatus(
+                machine_name="summary-only",
+                connectivity=DeviceConnectivity.OFFLINE,
+                key_expiry=KeyExpiryState.FAILED,
+            )
+        ],
     )
 
     assert "body" not in error.model_dump()
     assert "body" not in report.model_dump()["action_errors"][0]
+    assert "device_statuses" not in report.model_dump()
+    for internal_value in ("device_statuses", "machine_name", "summary-only"):
+        assert internal_value not in report.model_dump_json()
 
 
 def test_recovery_key_is_masked_except_for_explicit_response_model() -> None:

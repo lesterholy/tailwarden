@@ -8,11 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-      fail_on_stale:
-        description: "Fail the job when a server has not checked in recently"
-        required: false
-        default: true
-        type: boolean
   schedule:
     - cron: "0 0,12 * * *"
 
@@ -42,8 +37,9 @@ jobs:
       KEY_EXPIRY_WARNING_HOURS: ${{ vars.KEY_EXPIRY_WARNING_HOURS || '168' }}
       AUTH_KEY_EXPIRY_SECONDS: ${{ vars.AUTH_KEY_EXPIRY_SECONDS || '3600' }}
       REPORT_REDACT_DETAILS: "true"
+      REPORT_DEVICE_NAMES: "true"
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
-      FAIL_ON_STALE: ${{ github.event_name != 'workflow_dispatch' && 'true' || (inputs.fail_on_stale && 'true' || 'false') }}
+      FAIL_ON_STALE: "false"
 
     steps:
       - name: Checkout

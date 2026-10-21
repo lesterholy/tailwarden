@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -15,6 +16,19 @@ from pydantic import (
 )
 
 from .errors import UpstreamPayloadError
+
+_DNS_LABEL_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def _machine_name_from_payload(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    # Validate the entire API name so malformed suffixes and control characters
+    # cannot be discarded while extracting an otherwise plausible first label.
+    labels = value.removesuffix(".").split(".")
+    if not all(_DNS_LABEL_PATTERN.fullmatch(label) for label in labels):
+        return None
+    return labels[0]
 
 
 def _payload_error(message: str, payload: object) -> UpstreamPayloadError:
@@ -81,6 +95,7 @@ class Device(TailwardenModel):
     key_expiry_disabled: StrictBool = False
     expires_at: datetime | None = None
     last_seen_at: datetime | None = None
+    machine_name: str | None = Field(default=None, exclude=True)
 
     @field_validator("expires_at", "last_seen_at", mode="before")
     @classmethod
@@ -170,6 +185,7 @@ class Device(TailwardenModel):
                 field_name="expires",
             ),
             last_seen_at=_parse_datetime(payload.get("lastSeen"), field_name="lastSeen"),
+            machine_name=_machine_name_from_payload(payload.get("name")),
         )
 
     def to_reference(self) -> DeviceReference:
@@ -181,6 +197,26 @@ class DeviceIssueCode(StrEnum):
     STALE = "stale"
     UNKNOWN_LAST_SEEN = "unknown_last_seen"
     KEY_EXPIRING = "key_expiring"
+
+
+class DeviceConnectivity(StrEnum):
+    SEEN_RECENTLY = "seen_recently"
+    OFFLINE = "offline"
+    STALE = "stale"
+    UNKNOWN_LAST_SEEN = "unknown_last_seen"
+
+
+class KeyExpiryState(StrEnum):
+    ALREADY_DISABLED = "already_disabled"
+    DISABLED_THIS_RUN = "disabled_this_run"
+    PLANNED = "planned"
+    FAILED = "failed"
+
+
+class DeviceStatus(TailwardenModel):
+    machine_name: str | None
+    connectivity: DeviceConnectivity
+    key_expiry: KeyExpiryState
 
 
 class DeviceIssue(TailwardenModel):
@@ -294,6 +330,7 @@ class KeepaliveReport(TailwardenModel):
     key_expiry_actions: ActionCounts = Field(default_factory=ActionCounts)
     issues: list[DeviceIssue] = Field(default_factory=list)
     action_errors: list[ActionError] = Field(default_factory=list)
+    device_statuses: list[DeviceStatus] = Field(default_factory=list, exclude=True)
 
     @field_validator("started_at", "finished_at", mode="before")
     @classmethod
@@ -313,11 +350,14 @@ __all__ = [
     "ActionError",
     "TailwardenModel",
     "Device",
+    "DeviceConnectivity",
     "DeviceIssue",
     "DeviceIssueCode",
     "DeviceReference",
+    "DeviceStatus",
     "KeepaliveOutcome",
     "KeepaliveReport",
+    "KeyExpiryState",
     "RecoveryKey",
     "RecoveryKeyResponse",
 ]

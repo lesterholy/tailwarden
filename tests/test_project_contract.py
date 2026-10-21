@@ -79,6 +79,12 @@ def test_keepalive_workflow_keeps_exact_12_hour_schedule_and_uv_commands() -> No
     assert "id-token: write" in workflow
     assert "persist-credentials: false" in workflow
     assert 'REPORT_REDACT_DETAILS: "true"' in workflow
+    assert 'REPORT_DEVICE_NAMES: "true"' in workflow
+    assert re.findall(r"^\s*FAIL_ON_STALE:\s*(.+)$", workflow, re.MULTILINE) == ['"false"']
+    assert "fail_on_stale" not in workflow
+    assert "--fail-on-stale" not in workflow
+    assert "continue-on-error" not in workflow
+    assert "|| true" not in workflow
     assert "secrets.TS_" not in workflow
     assert "actions/checkout@v" not in workflow
     assert "actions/setup-python@v" not in workflow
@@ -200,3 +206,10 @@ def test_docs_match_schedule_recovery_and_secret_contracts() -> None:
     assert "openssl rand -hex 32" in combined
     assert "controlled local terminal" in english
     assert "受控本地终端" in chinese
+    for document in (english, chinese, operations):
+        assert "REPORT_DEVICE_NAMES" in document
+        assert "REPORT_REDACT_DETAILS" in document
+        assert "Runner" in document
+        assert "step env" in document
+        assert "FAIL_ON_STALE" in document
+        assert "fail_on_stale" not in document

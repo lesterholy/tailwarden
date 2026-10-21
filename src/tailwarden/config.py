@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     dry_run: bool = Field(default=False, alias="DRY_RUN")
     fail_on_stale: bool = Field(default=True, alias="FAIL_ON_STALE")
     report_redact_details: bool = Field(default=False, alias="REPORT_REDACT_DETAILS")
+    report_device_names: bool = Field(default=False, alias="REPORT_DEVICE_NAMES")
 
     app_host: str = Field(default="127.0.0.1", alias="APP_HOST", min_length=1)
     app_port: int = Field(default=8000, alias="APP_PORT", ge=1, le=65535)

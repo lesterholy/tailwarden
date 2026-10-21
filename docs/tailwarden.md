@@ -74,7 +74,9 @@ CLI：
 3. 在 GitHub 仓库 **Settings > Environments > production > Variables** 保存非敏感配置。
 
 公开仓库的普通访客不能直接浏览 Variables 值，但有相应权限的仓库协作者可以通过 GitHub
-API 读取，而且 Variables 不会在日志中自动脱敏。因此这里只存放可公开的配置元数据。
+API 读取。GitHub Runner 会在 step env 中明文打印配置 vars，包括 Client ID、Audience、
+tailnet、tag 和阈值。这些是配置标识符，不是 secret；程序脱敏不覆盖 Runner 的这部分
+输出。因此这里只存放可公开的配置元数据。
 
 Trust Credential 的 OIDC subject 必须与 GitHub workflow 实际拿到的 OIDC claim 精确匹配。
 不要继续照抄旧示例里的仓库路径格式；请先读取当前仓库的 subject prefix，再按 job 绑定的
@@ -105,9 +107,19 @@ Tailscale Trust Credential 推荐值：
 | Scopes  | `devices:core`                                                                   |
 | Tags    | `tag:tailwarden-managed`（推荐专用 tag）                                           |
 
-GitHub Actions 始终强制输出脱敏。公开日志与 Step Summary 只显示结果、计数和通用错误，
-不展示 tailnet、tag、设备名称、地址、逐台时间或上游错误正文。需要逐台定位时，请在受控
-本地终端重跑。
+GitHub Actions 强制程序输出脱敏，workflow 保持 `REPORT_REDACT_DETAILS=true`。console JSON
+保留结果、计数、运行开始/结束时间与带 HTTP 状态码的通用错误，不新增机器名或逐台字段。
+
+`REPORT_DEVICE_NAMES` 应用默认 `false`，workflow 显式设为 `true`，因此 Step Summary 会
+**公开每台匹配机器的短名**、控制面健康状态和密钥维护结果。短名取 API `name` 的第一个
+DNS 标签，不回退到 hostname、ID 或地址；缺失或非法名称显示 `(name unavailable)`。
+状态只来自 Tailscale API `online`/`lastSeen`，不主动 ping，不证明实际网络可达。
+
+设备表覆盖最近出现、offline、stale、未知 lastSeen，以及密钥已禁用、本次禁用成功、
+禁用失败、dry-run 计划；零匹配明确显示 `0 matches`。程序脱敏输出仍隐藏设备 ID、DNS
+后缀、地址、tailnet、tag、逐台时间和上游错误详情，保留原有运行时间戳和 HTTP 状态码。
+若需关闭表格，将 workflow 的 `REPORT_DEVICE_NAMES` 改为 `"false"`。Runner 的 step env
+仍会明文打印配置 vars；需要进一步逐台定位时，请在受控本地终端重跑。
 
 各环境变量的来源如下：
 
@@ -122,7 +134,9 @@ GitHub Actions 始终强制输出脱敏。公开日志与 Step Summary 只显示
 | `KEY_EXPIRY_WARNING_HOURS`                                        | `KEY_EXPIRY_WARNING_HOURS`           | 运维人员定义；默认 `168`                                                                      |
 | `AUTH_KEY_EXPIRY_SECONDS`                                         | `AUTH_KEY_EXPIRY_SECONDS`            | 运维人员定义；默认 `3600`                                                                     |
 | `DRY_RUN`                                                         | workflow dispatch 的 `dry_run`       | 手动触发时选择；定时任务固定为 `false`                                                        |
-| `FAIL_ON_STALE`                                                   | workflow dispatch 的 `fail_on_stale` | 手动触发时选择；定时任务固定为 `true`                                                         |
+| `FAIL_ON_STALE`                                                   | workflow 固定 `false`               | 定时和手动运行均只报告设备异常；本地 CLI 默认仍为 `true`                                     |
+| `REPORT_DEVICE_NAMES`                                             | workflow 固定 `true`                | 应用默认 `false`；仅控制 Step Summary 设备表，会公开机器短名和固定状态                       |
+| `REPORT_REDACT_DETAILS`                                           | workflow 固定 `true`                | 本地默认 `false`；GitHub Actions 强制程序脱敏，不覆盖 Runner step env                         |
 | `TS_TOKEN`                                                        | 不设置                               | 仅本地调试；从 Tailscale **Settings > Keys** 创建短期 API access token                        |
 | `AUTH_KEY_DESCRIPTION`                                            | 不设置                               | 仅影响本地显式 recovery key；由操作者填写或使用 `.env.example` 默认值                         |
 | `HTTP_TOTAL_TIMEOUT_SECONDS` / `HTTP_CONNECT_TIMEOUT_SECONDS`     | 不设置                               | 本地可调参数；由操作者填写或使用 `.env.example` 默认值                                        |
@@ -172,8 +186,8 @@ workflow 会把 GitHub environment 里的 `TS_MANAGER_CLIENT_ID` 和 `TS_MANAGER
 - pull request CI 没有 `id-token: write` 权限，也不会绑定 `production` environment。
 - 第三方 GitHub Actions 固定到完整 commit SHA；Dependabot 负责提出后续更新。
 
-首次部署后，先手动执行一次 `dry_run=true`、`fail_on_stale=false`，确认 OIDC、设备 tag 和
-脱敏输出符合预期，再让定时任务执行实际修改。
+首次部署后，先手动执行一次 `dry_run=true`，确认 OIDC、设备 tag 和公开报表符合预期，再让
+定时任务执行实际修改。定时与手动触发均固定 `FAIL_ON_STALE=false`，没有手动失败策略输入。
 
 ## 设备选择语义
 
@@ -224,7 +238,11 @@ JWT 或设备信息粘贴到公开 Issue。
 
 - 正常巡检不会自动创建 recovery key。
 - `no matches` 代表没有匹配到设备，应作为可见结果返回，而不是伪装成成功修复。
-- 遇到 API 错误、认证错误或 payload 异常时，应显式失败。
+- workflow 中 stale、offline、未知 lastSeen 只记录表格、正常退出（`0`）。
+- API 操作错误（含单台禁用 key expiry 失败）、认证错误或 payload 异常仍返回 `4`；
+  配置错误返回 `64`。单台维护失败后仍处理其余设备，Summary 保留所有匹配行。
+- 本地 CLI 的 `FAIL_ON_STALE` 默认 `true`，`--fail-on-stale` / `--no-fail-on-stale` 可覆盖；
+  启用时 stale/offline 返回 `2`。未知 lastSeen 保持单独统计，不计为最近出现。
 
 ## Recovery key 策略
 

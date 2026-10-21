@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,12 +22,203 @@ from tailwarden.config import Settings
 from tailwarden.errors import ConfigurationError, UpstreamHTTPError
 from tailwarden.models import (
     ActionError,
+    Device,
     DeviceIssue,
     DeviceIssueCode,
     DeviceReference,
     KeepaliveOutcome,
     KeepaliveReport,
 )
+from tailwarden.runtime import AppRuntime
+from tailwarden.service import KeepaliveService
+
+NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+
+
+class FakeDeviceClient:
+    def __init__(self, *, fail_disable: bool = False, fail_list: bool = False) -> None:
+        self.fail_disable = fail_disable
+        self.fail_list = fail_list
+        self.disabled_ids: list[str] = []
+
+    async def list_devices(self, tailnet: str) -> list[Device]:
+        if self.fail_list:
+            raise UpstreamHTTPError(
+                service="Tailscale devices",
+                status_code=401,
+                message="private list error",
+                body="private list body",
+            )
+        return [
+            Device.from_tailscale_payload(
+                {
+                    "nodeId": f"private-id-{short_name}",
+                    "name": f"{short_name}.private-dns.ts.net",
+                    "hostname": f"private-host-{short_name}",
+                    "addresses": ["100.64.0.77"],
+                    "tags": ["tag:excluded" if short_name == "excluded" else "tag:private-server"],
+                    "online": online,
+                    "lastSeen": last_seen,
+                    "keyExpiryDisabled": disabled,
+                    "expires": "2026-09-03T04:05:06Z",
+                }
+            )
+            for short_name, online, last_seen, disabled in [
+                ("stale-node", True, "2026-08-01T01:02:03Z", True),
+                ("offline-node", False, "2026-09-02T11:59:00Z", False),
+                ("unknown-node", None, None, False),
+                ("recent-node", None, "2026-09-02T11:59:00Z", True),
+                ("excluded", False, None, False),
+            ]
+        ]
+
+    async def disable_key_expiry(self, device_id: str) -> None:
+        self.disabled_ids.append(device_id)
+        if self.fail_disable and device_id == "private-id-offline-node":
+            raise UpstreamHTTPError(
+                service="Tailscale devices",
+                status_code=403,
+                message="private action error",
+                body="private action body",
+            )
+
+
+def install_service_runtime(monkeypatch: pytest.MonkeyPatch, client: FakeDeviceClient) -> None:
+    class ServiceRuntime(AppRuntime):
+        async def _build_service(self) -> KeepaliveService:
+            return KeepaliveService(self.settings, client, now_factory=lambda: NOW)
+
+    monkeypatch.setattr(cli_module, "AppRuntime", ServiceRuntime)
+
+
+@pytest.mark.parametrize(
+    ("fail_disable", "dry_run", "env_fail", "override", "expected_exit"),
+    [
+        (False, False, False, None, EXIT_OK),
+        (True, False, False, None, EXIT_OPERATION_ERROR),
+        (False, True, False, None, EXIT_OK),
+        (False, False, True, None, EXIT_STALE),
+        (False, False, False, "--fail-on-stale", EXIT_STALE),
+        (False, False, True, "--no-fail-on-stale", EXIT_OK),
+    ],
+)
+def test_cli_real_service_reports_every_device_and_preserves_exit_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fail_disable: bool,
+    dry_run: bool,
+    env_fail: bool,
+    override: str | None,
+    expected_exit: int,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    client = FakeDeviceClient(fail_disable=fail_disable)
+    install_service_runtime(monkeypatch, client)
+    summary_path = tmp_path / "summary.md"
+    for key, value in {
+        "GITHUB_ACTIONS": "true",
+        "REPORT_DEVICE_NAMES": "true",
+        "REPORT_REDACT_DETAILS": "true",
+        "FAIL_ON_STALE": str(env_fail).lower(),
+        "DRY_RUN": str(dry_run).lower(),
+        "GITHUB_STEP_SUMMARY": str(summary_path),
+        "TAILNET": "private-tailnet.example",
+        "SERVER_TAG": "tag:private-server",
+        "REJOIN_AUTH_KEY_TAG": "tag:private-rejoin",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    assert main(["run"] + ([override] if override else [])) == expected_exit
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    summary = summary_path.read_text(encoding="utf-8")
+    rows = [line for line in summary.splitlines() if line.startswith("| `")]
+    changed = "planned (dry-run)" if dry_run else "disabled this run"
+    offline_result = "disable failed" if fail_disable else changed
+    assert rows == [
+        "| `stale-node` | stale (lastSeen older than 30 min) | already disabled |",
+        f"| `offline-node` | offline (online=false) | {offline_result} |",
+        f"| `unknown-node` | unknown (lastSeen unavailable) | {changed} |",
+        "| `recent-node` | seen within 30 min | already disabled |",
+    ]
+    assert client.disabled_ids == (
+        []
+        if dry_run
+        else [
+            "private-id-offline-node",
+            "private-id-unknown-node",
+        ]
+    )
+    console = json.loads(captured.out)
+    assert set(console) == {
+        "outcome",
+        "dry_run",
+        "fail_on_stale",
+        "stale_after_minutes",
+        "key_expiry_warning_hours",
+        "auth_key_expiry_seconds",
+        "started_at",
+        "finished_at",
+        "total_devices",
+        "stale_devices",
+        "unknown_last_seen_devices",
+        "expiring_devices",
+        "key_expiry_actions",
+        "action_errors",
+        "details_redacted",
+    }
+    assert console["total_devices"] == 4
+    assert console["stale_devices"] == 2
+    assert console["unknown_last_seen_devices"] == 1
+    assert console["started_at"] == console["finished_at"] == NOW.isoformat()
+    assert NOW.isoformat() in summary
+    assert "does not ping devices" in summary
+    for name in ("stale-node", "offline-node", "unknown-node", "recent-node"):
+        assert name not in captured.out
+    for private_value in (
+        "private-",
+        "100.64.0.77",
+        "excluded",
+        "2026-08-01T01:02:03",
+        "2026-09-02T11:59:00",
+        "2026-09-03T04:05:06",
+        "device_statuses",
+        "machine_name",
+    ):
+        assert private_value not in captured.out + summary
+
+
+@pytest.mark.parametrize("failure_stage", ["authentication", "list"])
+def test_cli_authentication_and_list_failures_still_exit_four(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure_stage: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("REPORT_DEVICE_NAMES", "true")
+    monkeypatch.setenv("FAIL_ON_STALE", "false")
+    if failure_stage == "list":
+        install_service_runtime(monkeypatch, FakeDeviceClient(fail_list=True))
+    else:
+
+        async def fail_authentication(self: AppRuntime) -> KeepaliveService:
+            raise UpstreamHTTPError(
+                service="Tailscale OAuth",
+                status_code=401,
+                message="private authentication error",
+                body="private authentication body",
+            )
+
+        monkeypatch.setattr(AppRuntime, "_build_service", fail_authentication)
+
+    assert main(["run"]) == EXIT_OPERATION_ERROR
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    service = "Tailscale devices" if failure_stage == "list" else "Tailscale OAuth"
+    assert captured.err == f"{service} request failed with HTTP 401\n"
 
 
 def report(
