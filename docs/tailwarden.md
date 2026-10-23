@@ -4,6 +4,11 @@ Tailwarden 的 CLI 执行单次 Tailscale 设备巡检。调度与自动化在�
 不提供运行 workflow，也不规定生产频率。单次巡检无需单独部署 FastAPI 服务。
 配置字段及默认值以 `.env.example` 和 `src/tailwarden/config.py` 为准。
 
+推荐的外部调度方式是专用 Grok Bot agent：用 `TS_TOKEN` 运行 CLI，并通过 Grok Bot
+routine 定时执行 `tailwarden run`。完整操作流程与截图见
+[README](../README.md#complete-grok-bot-operator-flow)（[中文](../README.zh-CN.md)）。
+下文的 GitHub Actions 内容仅说明代码中保留的可选兼容路径。
+
 ## 运行与鉴权
 
 ```bash
