@@ -92,6 +92,8 @@ def test_empty_optional_values_become_none() -> None:
     settings = build_settings(
         APP_API_TOKEN="   ",
         TS_TOKEN="",
+        TS_OAUTH_CLIENT_ID=" ",
+        TS_OAUTH_CLIENT_SECRET="  ",
         TS_CLIENT_ID=" ",
         TS_AUDIENCE="",
         ACTIONS_ID_TOKEN_REQUEST_TOKEN="  ",
@@ -99,10 +101,28 @@ def test_empty_optional_values_become_none() -> None:
     )
     assert settings.app_api_token is None
     assert settings.ts_token is None
+    assert settings.ts_oauth_client_id is None
+    assert settings.ts_oauth_client_secret is None
+    assert settings.has_oauth_client_config is False
     assert settings.ts_client_id is None
     assert settings.ts_audience is None
     assert settings.actions_id_token_request_token is None
     assert settings.actions_id_token_request_url is None
+
+
+def test_oauth_credentials_are_normalized_and_secret_is_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TS_OAUTH_CLIENT_ID", " oauth-client ")
+    monkeypatch.setenv("TS_OAUTH_CLIENT_SECRET", " private-client-secret ")
+    settings = build_settings()
+
+    assert settings.ts_oauth_client_id == "oauth-client"
+    assert settings.ts_oauth_client_secret is not None
+    assert settings.ts_oauth_client_secret.get_secret_value() == "private-client-secret"
+    assert settings.has_oauth_client_config is True
+    assert "private-client-secret" not in repr(settings)
+    assert "private-client-secret" not in settings.model_dump_json()
 
 
 def test_process_environment_overrides_dotenv(

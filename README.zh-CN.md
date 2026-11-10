@@ -37,18 +37,30 @@
 
 把 agent 指向 [`lesterholy/tailwarden`](https://github.com/lesterholy/tailwarden)。Grok Bot 可通过 GitHub 连接器阅读源码、`.env.example`、文档与 CLI 行为，再在 box 上 `git clone` / `git pull` 后执行命令。
 
-### 3. 鉴权：用 `TS_TOKEN`（不要把 token 打进聊天）
+### 3. 鉴权：OAuth Client 或 `TS_TOKEN`（不要把凭据打进聊天）
 
 ![03 Tailscale 管理台创建 API access token](docs/images/03-tailscale-api-access-token.png)
 
 ![04 用 Grok Bot 安全密钥输入提供 TS_TOKEN](docs/images/04-grok-bot-secure-secret-input.png)
 
-在 **Grok Bot / 本地 CLI** 场景下，使用 Tailscale 管理台 **Settings > Keys** 创建的 **API access token**，通过环境变量 `TS_TOKEN` 提供。
+对于长期无人值守的 **Grok Bot / 本地 CLI**，在 Tailscale 管理台 **Settings > Trust credentials** 创建 [OAuth Client](https://tailscale.com/kb/1215/oauth-clients)。授予 `devices:core` **Write**，用于巡检和关闭设备 key expiry；需要 `recovery-key` 时再授予 `auth_keys` **Write**。为客户端授权 `tag:tailwarden-managed`（或实际使用的设备和 rejoin 标签）。
 
-请用 Grok Bot 的 **secure secret 输入** 注入，让 token 永不出现在聊天记录里。Token 最长大约 90 天；到期或权限不足时 API 会返回 401/403，bot 应主动提醒你轮换。
+通过 secure secret 输入或私有的本地 `.env` 同时配置：
+
+```dotenv
+TS_OAUTH_CLIENT_ID=你的客户端ID
+TS_OAUTH_CLIENT_SECRET=你的客户端密钥
+GITHUB_ACTIONS=false
+```
+
+每次 `run` 或 `recovery-key` 操作都会获取新的、有效期一小时的 access token；长驻 `serve` 模式中的每次操作也一样。令牌不缓存、不落盘。权限和标签在 OAuth Client 上配置，tailwarden 使用客户端已获授权的权限。Recovery key 仍为一次性，按配置过期（默认一小时）。
+
+认证优先级为：完整 GitHub OIDC → OAuth Client → `TS_TOKEN`。只要填写了任一 OAuth 字段，就必须同时提供另一个；缺失或认证失败会直接报错，不会回退使用 `TS_TOKEN`。本地 OAuth 模式应将独立的 OIDC 字段 `TS_CLIENT_ID` / `TS_AUDIENCE` 留空。
+
+临时运行仍可使用 Tailscale 管理台 **Settings > Keys** 创建的 **API access token**，通过 `TS_TOKEN` 提供。请用 Grok Bot 的 **secure secret 输入** 注入凭据，让它们永不出现在聊天记录里。手动创建的 API token 最长约 90 天。
 
 > **给仍在用 GitHub Actions 的读者（简要）：**  
-> 代码仍保留可选的 GitHub OIDC 路径（`TS_CLIENT_ID` / `TS_AUDIENCE`，外加 Actions 注入的 `ACTIONS_ID_TOKEN_REQUEST_*`）。该路径只在 GitHub Actions 运行时可用；`GITHUB_ACTIONS=true` 时不会回退到 `TS_TOKEN`，且禁止执行 `recovery-key`。本仓库不再附带调度用 workflow——若你自建 Actions，请自行配置 OIDC 与 Trust credentials。
+> 代码仍保留可选的 GitHub OIDC 路径（`TS_CLIENT_ID` / `TS_AUDIENCE`，外加 Actions 注入的 `ACTIONS_ID_TOKEN_REQUEST_*`）。该路径只在 GitHub Actions 运行时可用；`GITHUB_ACTIONS=true` 时不会回退到 `TS_TOKEN` 或 OAuth Client，且禁止执行 `recovery-key`。本仓库不再附带调度用 workflow——若你自建 Actions，请自行配置 OIDC 与 Trust credentials。
 
 ### 4. 推荐环境变量（Grok Bot 定时巡检）
 
@@ -141,6 +153,8 @@ uv run --frozen tailwarden run --no-fail-on-stale
 
 API access token 最长约 90 天。若巡检出现 **401 / 403**，bot 应明确告警「`TS_TOKEN` 可能过期或权限不足」，并引导你用 secure secret 输入轮换新 token——不要把新 token 贴进对话。
 
+OAuth 模式会在每次操作前自动申请新的 access token。令牌接口失败会终止当前操作，不重试、不回退其他凭据。遇到认证或权限错误时，检查客户端密钥、是否被撤销、scopes 和标签授权；不要把密钥贴进聊天。定时调度仍由外部自动化负责。
+
 ### 9. 需要浏览器登录时：暂停，交给你
 
 ![10 bot 暂停并请求你完成管理台登录](docs/images/10-pause-for-admin-browser-login.png)
@@ -167,7 +181,7 @@ uv run --frozen pytest
 
 ## 安全
 
-- 永远不要把 `TS_TOKEN`、recovery key、OIDC JWT、完整设备 ID 贴进公开 issue / PR / 聊天  
+- 永远不要把 `TS_TOKEN`、`TS_OAUTH_CLIENT_SECRET`、recovery key、OIDC JWT、完整设备 ID 贴进公开 issue / PR / 聊天
 - 泄露后先在签发方撤销，再轮换相关凭据  
 - 漏洞请按 [安全策略](.github/SECURITY.md) 私密报告  
 

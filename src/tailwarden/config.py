@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     app_api_token: SecretStr | None = Field(default=None, alias="APP_API_TOKEN", repr=False)
 
     ts_token: SecretStr | None = Field(default=None, alias="TS_TOKEN", repr=False)
+    ts_oauth_client_id: str | None = Field(default=None, alias="TS_OAUTH_CLIENT_ID")
+    ts_oauth_client_secret: SecretStr | None = Field(
+        default=None,
+        alias="TS_OAUTH_CLIENT_SECRET",
+        repr=False,
+    )
     ts_client_id: str | None = Field(default=None, alias="TS_CLIENT_ID")
     ts_audience: str | None = Field(default=None, alias="TS_AUDIENCE")
     actions_id_token_request_token: SecretStr | None = Field(
@@ -172,7 +178,7 @@ class Settings(BaseSettings):
             raise ValueError("APP_LOG_LEVEL is not supported")
         return normalized
 
-    @field_validator("ts_client_id", "github_step_summary", mode="before")
+    @field_validator("ts_client_id", "ts_oauth_client_id", "github_step_summary", mode="before")
     @classmethod
     def _normalize_optional_strings(cls, value: object | None) -> str | None:
         if value is None:
@@ -198,7 +204,13 @@ class Settings(BaseSettings):
             )
         return normalized
 
-    @field_validator("ts_token", "app_api_token", "actions_id_token_request_token", mode="before")
+    @field_validator(
+        "ts_token",
+        "ts_oauth_client_secret",
+        "app_api_token",
+        "actions_id_token_request_token",
+        mode="before",
+    )
     @classmethod
     def _normalize_optional_secrets(
         cls,
@@ -233,6 +245,10 @@ class Settings(BaseSettings):
     @property
     def has_static_tailscale_token(self) -> bool:
         return self.ts_token is not None
+
+    @property
+    def has_oauth_client_config(self) -> bool:
+        return bool(self.ts_oauth_client_id and self.ts_oauth_client_secret)
 
     @property
     def has_oidc_exchange_config(self) -> bool:

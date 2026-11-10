@@ -211,7 +211,7 @@ async def test_exchange_rejects_success_without_access_token(
 
 
 @pytest.mark.asyncio
-async def test_resolve_prefers_complete_oidc_over_static_token(
+async def test_resolve_prefers_complete_oidc_over_oauth_and_static_token(
     aiohttp_server,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,7 +230,13 @@ async def test_resolve_prefers_complete_oidc_over_static_token(
     app.router.add_post("/exchange", exchange)
     base_url = await aiohttp_server(app)
     monkeypatch.setattr(auth_module, "TAILSCALE_EXCHANGE_URL", f"{base_url}/exchange")
-    settings = build_settings(f"{base_url}/oidc", TS_TOKEN="static-token")
+    monkeypatch.setattr(auth_module, "TAILSCALE_OAUTH_URL", f"{base_url}/must-not-be-called")
+    settings = build_settings(
+        f"{base_url}/oidc",
+        TS_TOKEN="static-token",
+        TS_OAUTH_CLIENT_ID="oauth-client",
+        TS_OAUTH_CLIENT_SECRET="oauth-secret",
+    )
 
     async with aiohttp.ClientSession() as session:
         token = await resolve_tailscale_token(settings, session)
@@ -254,6 +260,8 @@ async def test_resolve_rejects_static_token_fallback_in_github_actions() -> None
         GITHUB_ACTIONS=True,
         TS_CLIENT_ID="partial",
         TS_TOKEN="static-token",
+        TS_OAUTH_CLIENT_ID="oauth-client",
+        TS_OAUTH_CLIENT_SECRET="oauth-secret",
     )
     async with aiohttp.ClientSession() as session:
         with pytest.raises(ConfigurationError, match="TS_TOKEN fallback is disabled"):

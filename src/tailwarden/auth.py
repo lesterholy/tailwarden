@@ -16,6 +16,8 @@ from .http import build_timeout, request_json
 GITHUB_OIDC_SERVICE = "GitHub OIDC"
 TAILSCALE_EXCHANGE_SERVICE = "Tailscale token exchange"
 TAILSCALE_EXCHANGE_URL = "https://api.tailscale.com/api/v2/oauth/token-exchange"
+TAILSCALE_OAUTH_SERVICE = "Tailscale OAuth"
+TAILSCALE_OAUTH_URL = "https://api.tailscale.com/api/v2/oauth/token"
 
 
 def _append_audience(url: str, audience: str) -> str:
@@ -153,6 +155,51 @@ async def exchange_tailscale_token(
     return await exchange_github_oidc_jwt(session, settings, jwt_token)
 
 
+async def fetch_oauth_access_token(
+    session: aiohttp.ClientSession,
+    settings: Settings,
+) -> SecretStr:
+    if not settings.has_oauth_client_config:
+        raise ConfigurationError(
+            "TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET are both required for OAuth"
+        )
+    assert settings.ts_oauth_client_secret is not None
+    try:
+        payload = await request_json(
+            session,
+            method="POST",
+            url=TAILSCALE_OAUTH_URL,
+            service=TAILSCALE_OAUTH_SERVICE,
+            timeout=build_timeout(settings),
+            headers={"Accept": "application/json"},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.ts_oauth_client_id,
+                "client_secret": settings.ts_oauth_client_secret.get_secret_value(),
+            },
+        )
+    except UpstreamHTTPError as exc:
+        # Token endpoint responses can echo credentials; keep only the HTTP status.
+        raise UpstreamHTTPError(
+            service=TAILSCALE_OAUTH_SERVICE,
+            status_code=exc.status_code,
+            message="OAuth token request rejected; check client credentials and permissions",
+        ) from None
+    except UpstreamPayloadError:
+        raise UpstreamPayloadError(
+            service=TAILSCALE_OAUTH_SERVICE,
+            message="response is not valid JSON",
+        ) from None
+
+    access_token = payload.get("access_token") if isinstance(payload, Mapping) else None
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise UpstreamPayloadError(
+            service=TAILSCALE_OAUTH_SERVICE,
+            message="response missing a non-empty access_token",
+        )
+    return SecretStr(access_token.strip())
+
+
 async def resolve_tailscale_token(
     settings: Settings,
     session: aiohttp.ClientSession,
@@ -161,19 +208,25 @@ async def resolve_tailscale_token(
         return await exchange_tailscale_token(session, settings)
     if settings.github_actions:
         raise ConfigurationError(
-            "GitHub Actions requires complete OIDC settings; TS_TOKEN fallback is disabled"
+            "GitHub Actions requires complete OIDC settings; TS_TOKEN fallback is disabled, "
+            "as is OAuth client fallback"
         )
+    if settings.ts_oauth_client_id or settings.ts_oauth_client_secret:
+        return await fetch_oauth_access_token(session, settings)
     if settings.ts_token is not None:
         return settings.ts_token
     raise ConfigurationError(
-        "configure complete GitHub OIDC settings or provide TS_TOKEN for local use"
+        "configure complete GitHub OIDC settings or provide "
+        "TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET (or TS_TOKEN) for local use"
     )
 
 
 __all__ = [
     "TAILSCALE_EXCHANGE_URL",
+    "TAILSCALE_OAUTH_URL",
     "exchange_github_oidc_jwt",
     "exchange_tailscale_token",
     "fetch_github_oidc_jwt",
+    "fetch_oauth_access_token",
     "resolve_tailscale_token",
 ]

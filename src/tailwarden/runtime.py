@@ -35,8 +35,11 @@ class AppRuntime:
     @property
     def ready(self) -> bool:
         session_ready = self._session is not None and not self._session.closed
+        local_credentials_ready = self.settings.has_static_tailscale_token
+        if self.settings.ts_oauth_client_id or self.settings.ts_oauth_client_secret:
+            local_credentials_ready = self.settings.has_oauth_client_config
         credentials_ready = self.settings.has_oidc_exchange_config or (
-            not self.settings.github_actions and self.settings.has_static_tailscale_token
+            not self.settings.github_actions and local_credentials_ready
         )
         return session_ready and credentials_ready
 

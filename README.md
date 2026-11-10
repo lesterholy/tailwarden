@@ -37,18 +37,30 @@ Create or open a Grok Bot agent dedicated to Tailwarden (for example named `tail
 
 Point the agent at [`lesterholy/tailwarden`](https://github.com/lesterholy/tailwarden). Grok Bot can read the tree through the GitHub connector, then `git clone` / `git pull` on the box and run the CLI.
 
-### 3. Auth: `TS_TOKEN` (never paste the token into chat)
+### 3. Auth: OAuth client or `TS_TOKEN` (keep secrets out of chat)
 
 ![03 Create an API access token in Tailscale admin](docs/images/03-tailscale-api-access-token.png)
 
 ![04 Provide TS_TOKEN via Grok Bot secure secret input](docs/images/04-grok-bot-secure-secret-input.png)
 
-For **Grok Bot / local CLI**, use an **API access token** from Tailscale admin **Settings > Keys**, supplied as `TS_TOKEN`.
+For unattended **Grok Bot / local CLI** runs, create an [OAuth client](https://tailscale.com/kb/1215/oauth-clients) under Tailscale admin **Settings > Trust credentials**. Grant `devices:core` **Write** for inspection and disabling device key expiry, plus `auth_keys` **Write** if you need `recovery-key`. Authorize `tag:tailwarden-managed` (or your configured device/rejoin tags) on the client.
 
-Inject it with Grok Bot’s **secure secret** input so the token never appears in chat. Tokens last up to about 90 days; on 401/403 the bot should alert you to rotate.
+Set both values through secure secret input or a private local `.env`:
+
+```dotenv
+TS_OAUTH_CLIENT_ID=your-client-id
+TS_OAUTH_CLIENT_SECRET=your-client-secret
+GITHUB_ACTIONS=false
+```
+
+Every `run` and `recovery-key` operation obtains a fresh one-hour access token, including repeated operations in `serve` mode. Tokens are not cached or written to disk. Configure scopes and tags on the OAuth client; tailwarden uses those granted permissions. Recovery keys remain one-shot with the configured expiry (one hour by default).
+
+Authentication order is complete GitHub OIDC, then OAuth client credentials, then `TS_TOKEN`. If either OAuth field is set, both are required; missing or rejected OAuth credentials fail without falling back to `TS_TOKEN`. Keep the separate OIDC fields `TS_CLIENT_ID` / `TS_AUDIENCE` empty for local OAuth use.
+
+For one-off use, an **API access token** from Tailscale admin **Settings > Keys**, supplied as `TS_TOKEN`, is still supported. Inject credentials with Grok Bot’s **secure secret** input so they never appear in chat. These manually generated API tokens last up to about 90 days.
 
 > **Brief note for GitHub Actions users:**  
-> The code still supports an optional GitHub OIDC path (`TS_CLIENT_ID` / `TS_AUDIENCE`, plus Actions-injected `ACTIONS_ID_TOKEN_REQUEST_*`). That path only works inside GitHub Actions; with `GITHUB_ACTIONS=true` authentication never falls back to `TS_TOKEN`, and `recovery-key` is disabled. This repo no longer ships a scheduling workflow—if you run Actions yourself, configure OIDC and Trust credentials on your side.
+> The code still supports an optional GitHub OIDC path (`TS_CLIENT_ID` / `TS_AUDIENCE`, plus Actions-injected `ACTIONS_ID_TOKEN_REQUEST_*`). That path only works inside GitHub Actions; with `GITHUB_ACTIONS=true` authentication never falls back to `TS_TOKEN` or OAuth client credentials, and `recovery-key` is disabled. This repo no longer ships a scheduling workflow—if you run Actions yourself, configure OIDC and Trust credentials on your side.
 
 ### 4. Recommended env for Grok Bot scheduled runs
 
@@ -139,6 +151,8 @@ Use a Grok Bot **routine** at **08:00** and **20:00 Asia/Shanghai** (instead of 
 
 API access tokens last up to ~90 days. On **401 / 403**, the bot should clearly warn that `TS_TOKEN` may be expired or under-scoped, and guide you to rotate via secure secret input—never paste the new token into the conversation.
 
+With OAuth, each operation requests a new access token automatically. A token-endpoint failure stops that operation without retrying or falling back to another credential. Check the OAuth client's secret, revocation status, scopes, and tags on authentication/permission errors; do not paste the secret into chat. Scheduling still belongs to your external automation.
+
 ### 9. When a browser admin login is required: pause
 
 ![10 Bot pauses for admin browser login](docs/images/10-pause-for-admin-browser-login.png)
@@ -165,7 +179,7 @@ uv run --frozen pytest
 
 ## Security
 
-- Never paste `TS_TOKEN`, recovery keys, OIDC JWTs, or full device IDs into public issues, PRs, or chat  
+- Never paste `TS_TOKEN`, `TS_OAUTH_CLIENT_SECRET`, recovery keys, OIDC JWTs, or full device IDs into public issues, PRs, or chat
 - On exposure, revoke at the issuer first, then rotate related credentials  
 - Report vulnerabilities privately per the [security policy](.github/SECURITY.md)  
 

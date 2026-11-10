@@ -4,7 +4,7 @@ Tailwarden 的 CLI 执行单次 Tailscale 设备巡检。调度与自动化在�
 不提供运行 workflow，也不规定生产频率。单次巡检无需单独部署 FastAPI 服务。
 配置字段及默认值以 `.env.example` 和 `src/tailwarden/config.py` 为准。
 
-推荐的外部调度方式是专用 Grok Bot agent：用 `TS_TOKEN` 运行 CLI，并通过 Grok Bot
+推荐的外部调度方式是专用 Grok Bot agent：用 OAuth Client 运行 CLI，并通过 Grok Bot
 routine 定时执行 `tailwarden run`。完整操作流程与截图见
 [README](../README.md#complete-grok-bot-operator-flow)（[中文](../README.zh-CN.md)）。
 下文的 GitHub Actions 内容仅说明代码中保留的可选兼容路径。
@@ -19,10 +19,24 @@ uv run --frozen tailwarden run
 本地短时调试可从 Tailscale **Settings > Keys** 创建短期 API access token，并临时
 设置 `TS_TOKEN`。不要提交真实 `.env`、token、auth key 或 recovery key。
 
+长期自动化建议从 **Settings > Trust credentials** 创建 OAuth Client，通过安全环境变量
+或私有 `.env` 配置 `TS_OAUTH_CLIENT_ID` 和 `TS_OAUTH_CLIENT_SECRET`，并设置
+`GITHUB_ACTIONS=false`。`devices:core` **Write** 用于读取设备和关闭 key expiry；
+创建 recovery key 还需要 `auth_keys` **Write**。客户端须获授权使用所配置的标签，
+默认是 `tag:tailwarden-managed`。参考 [官方 OAuth 文档](https://tailscale.com/kb/1215/oauth-clients)。
+
+每次巡检或创建 recovery key 前均自动获取新的短期 access token，长驻 `serve` 也使用
+相同行为，不缓存令牌、不写入磁盘。OAuth secret 必须安全保存；操作应在 access token
+的一小时有效期内完成，操作中途不刷新令牌或自动重放写请求。
+
+认证顺序为完整 OIDC、OAuth Client、`TS_TOKEN`。任一 OAuth 字段非空时必须同时配置
+另一个；配置缺失或令牌接口拒绝请求会直接报错，不回退旧 token、不自动重试。
+本地 OAuth 模式下将 OIDC 字段 `TS_CLIENT_ID` 和 `TS_AUDIENCE` 留空。
+
 应用保留可选的 GitHub Actions 运行时兼容：该运行时使用 GitHub OIDC 向 Tailscale
 Workload Identity Federation 换取短期访问令牌，要求完整的 `TS_CLIENT_ID`、
 `TS_AUDIENCE`、`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 和
-`ACTIONS_ID_TOKEN_REQUEST_URL`。GitHub Actions 运行时不会回退使用 `TS_TOKEN`。
+`ACTIONS_ID_TOKEN_REQUEST_URL`。GitHub Actions 运行时不会回退使用 `TS_TOKEN` 或 OAuth Client。
 这些 `ACTIONS_ID_TOKEN_REQUEST_*` 值由 GitHub Actions 运行时提供，不能在普通
 本地环境中假定存在。外部自动化如何调度、注入配置及保护凭据，由其维护方负责。
 
